@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 AERA_MAINTAINER := Antigravity
-AERA_SCREEN_H := 2780
+# Screen height calculated by aspect ratio x 120 (19.8 x 120 = 2376).
+AERA_SCREEN_H := 2376
 AERA_STATUS_H := 115
 AERA_HIDE_NOTCH := 1
 AERA_STATUS_INDENT_LEFT := 40
