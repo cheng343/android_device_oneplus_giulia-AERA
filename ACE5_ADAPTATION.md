@@ -86,32 +86,29 @@
 
 ## 三、 本地与云端构建指引
 
-### 1. 本地 Linux / WSL 构建步骤
-```bash
-# 1. 准备源码环境
-mkdir -p ~/android/AERA_16.0 && cd ~/android/AERA_16.0
-repo init -u https://github.com/AERA-Recovery/android_manifest -b aera-16.0
-repo sync -c -j$(nproc --all)
+### 推荐：沿用已成功的低内存云端构建流程
 
-# 2. 拉取此设备树至 device/oneplus/giulia
-git clone https://github.com/cheng343/android_device_oneplus_giulia-AERA.git device/oneplus/giulia
+使用 `.github/workflows/build.yml`，工作流名称为 **AERA Recovery 16 Builder**。
+保留 Ubuntu 24.04 根分区构建、额外 10 GiB swap、同步后清理 `.repo` 缓存及内存/磁盘监控。
+不要用旧 `build_aera.yml` 或 Colab 笔记本替代此流程。
 
-# 3. 初始化编译变量并编译
-source build/envsetup.sh
-lunch twrp_giulia-eng
-mka recoveryimage -j$(nproc --all)
-```
-编译成功后，产物位于 `out/target/product/giulia/recovery.img`。
+1. 进入仓库 **Actions → AERA Recovery 16 Builder → Run workflow**。
+2. 工作流与设备树均选 `aera-16.0`，Lunch 目标保持 `giulia-bp2a-eng`。
+3. 工作流会先按 `patches/upstream.xml` 固定补丁目标版本，依序应用补丁并执行针对性测试，再编译。
+4. 成功后从 Artifacts 下载 `AERA-Recovery-giulia`；Release 保持草稿状态。
 
-### 2. GitHub Actions 云端构建
-1. 访问已推送的仓库：[cheng343/android_device_oneplus_giulia-AERA](https://github.com/cheng343/android_device_oneplus_giulia-AERA)
-2. 进入 **Actions** 标签页，在左侧选择 **TWRP 16 Builder** 工作流。
-3. 点击 **Run workflow**，使用默认参数直接运行。
-4. 构建完成后，在 Workflow Run 详情页底部的 **Artifacts** 处下载打包生成的 `recovery.img`。
+本地 Linux 构建必须复现同一工作流的资源准备、local manifest 和补丁步骤，
+再运行 `lunch twrp_giulia-bp2a-eng`、`mka adbd recoveryimage`。
+不能只执行旧版说明中的裸 `mka` 命令。产物为 `out/target/product/giulia/recovery.img`。
 
 ---
 
 ## 四、 刷入与测试步骤
+
+以下步骤尚需在当前固件上验证，且要求 Bootloader 已解锁。
+不要因为 `-avb-oem.img` 的名称就认为镜像已获官方签名：该文件仅复制原厂 vbmeta，
+其哈希描述仍对应原厂镜像，不能证明新镜像通过 AVB 校验，也不能据此重新锁定 BL。
+当前仓库没有确认“必须刷修改版 vbmeta 禁用 AVB”的要求，先保留原厂 vbmeta。
 
 对于出厂搭载 Android 15 (Virtual A/B) 的一加 Ace 5：
 

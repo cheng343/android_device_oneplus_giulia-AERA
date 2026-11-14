@@ -1,8 +1,8 @@
-From 43470522270772d9e2adbf5ce6340705d110ca0c Mon Sep 17 00:00:00 2001
+From 7066ac8d6db1ce4ec0655e1cdfac59c71f332c79 Mon Sep 17 00:00:00 2001
 From: cheng343 <203324649+cheng343@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 11:47:47 +0800
-Subject: [PATCH 8/8] plugins: download plugin packages through the GitHub
- asset API
+Subject: [PATCH] plugins: download plugin packages through the GitHub asset
+ API
 
 The store opens on the contents API, but installation still pulls the package
 from github.com, which is filtered exactly like raw.githubusercontent.com on the
@@ -18,50 +18,42 @@ files, and the jsDelivr mirror and the direct URL remain as fallbacks. The
 package's SHA-256 is still checked after the transfer, so a source can only ever
 supply the bytes the catalog already names.
 ---
- aeraui/features/plugins/plugin_manager.cpp | 144 ++++++++++++++++++---
- 1 file changed, 129 insertions(+), 15 deletions(-)
+ aeraui/features/plugins/download.hpp       |  21 +++-
+ aeraui/features/plugins/plugin_manager.cpp | 125 ++++++++++++++++++---
+ aeraui/tests/plugin_download_test.cpp      |  13 ++-
+ 3 files changed, 141 insertions(+), 18 deletions(-)
 
-diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index fb52c1f..f2bf618 100644
---- a/aeraui/features/plugins/plugin_manager.cpp
-+++ b/aeraui/features/plugins/plugin_manager.cpp
-@@ -53,6 +53,7 @@ constexpr char kMemoryRoot[] = "/tmp/aera/plugins";
- constexpr uint64_t kMaxCatalog = 1024 * 1024;
- constexpr uint64_t kMaxManifest = 64 * 1024;
- constexpr uint64_t kMaxSignature = 4096;
-+constexpr uint64_t kMaxReleaseMetadata = 1024 * 1024;
- // A real catalog is a few hundred kilobytes. A tiny body is what a captive
- // portal, a filtering proxy or a half closed connection leaves behind, and
- // wget stores it with exit status 0 - which used to be reported as a bad
-@@ -485,8 +486,14 @@ bool ParseCatalog(const std::string &text, std::vector<Plugin> &plugins,
- // in what order; this function only enforces the deadline and the byte limits.
- bool DownloadOnce(const std::string &url, const std::string &path, uint64_t limit,
-                   Progress *progress, unsigned progress_start,
--                  unsigned progress_end, uint64_t expected_size) {
-+                  unsigned progress_end, uint64_t expected_size,
-+                  const char *accept = nullptr) {
-   if (limit == 0 || limit > kMaxPayload) return false;
-+  // The release asset endpoint hands over the bytes themselves only when asked
-+  // for them explicitly; anything allocated for that argument stays in the parent
-+  // so the child does no allocation after fork.
-+  std::string accept_argument;
-+  if (accept && *accept) accept_argument = std::string("--header=Accept: ") + accept;
-   {
+diff --git a/aeraui/features/plugins/download.hpp b/aeraui/features/plugins/download.hpp
+index 99fca2a..c4b09a3 100644
+--- a/aeraui/features/plugins/download.hpp
++++ b/aeraui/features/plugins/download.hpp
+@@ -23,9 +23,12 @@ struct DownloadPolicy {
+ inline bool Download(const std::string &url, const std::string &path, uint64_t limit,
+                      Progress *progress = nullptr, unsigned progress_start = 0,
+                      unsigned progress_end = 0, uint64_t expected_size = 0,
+-                     DownloadPolicy policy = {}) {
++                     DownloadPolicy policy = {}, const char *accept = nullptr) {
+   using Clock = std::chrono::steady_clock;
+   if (!limit || !policy.attempts || policy.idle_timeout.count() <= 0) return false;
++  // Construct optional API headers before fork; the child performs no allocation.
++  const std::string accept_argument = accept && *accept
++      ? std::string("--header=Accept: ") + accept : std::string();
+   for (unsigned attempt = 0; attempt < policy.attempts; ++attempt) {
      unlink(path.c_str());
- 
-@@ -520,8 +527,20 @@ bool DownloadOnce(const std::string &url, const std::string &path, uint64_t limi
+     if (progress && progress->cancel.load()) return false;
+@@ -48,8 +51,20 @@ inline bool Download(const std::string &url, const std::string &path, uint64_t l
        umask(077);
        const char *busybox = access("/sbin/busybox", X_OK) == 0
-                                 ? "/sbin/busybox" : "/system/bin/busybox";
--      const char *arguments[] = {busybox, "wget", "-q", "-T", "10", "-t", "1",
--                                 "-O", path.c_str(), url.c_str(), nullptr};
+           ? "/sbin/busybox" : "/system/bin/busybox";
+-      const char *arguments[] = {busybox, "wget", "-q", "-T", "120", "-t", "1",
+-                                "-O", path.c_str(), url.c_str(), nullptr};
 +      const char *arguments[12];
 +      size_t count = 0;
 +      arguments[count++] = busybox;
 +      arguments[count++] = "wget";
 +      arguments[count++] = "-q";
 +      arguments[count++] = "-T";
-+      arguments[count++] = "10";
++      arguments[count++] = "120";
 +      arguments[count++] = "-t";
 +      arguments[count++] = "1";
 +      if (!accept_argument.empty()) arguments[count++] = accept_argument.c_str();
@@ -72,7 +64,36 @@ index fb52c1f..f2bf618 100644
        execv(busybox, const_cast<char *const *>(arguments));
        _exit(127);
      }
-@@ -907,6 +926,86 @@ bool DownloadApiContents(const std::string &url, const std::string &path,
+diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
+index b90a820..7740956 100644
+--- a/aeraui/features/plugins/plugin_manager.cpp
++++ b/aeraui/features/plugins/plugin_manager.cpp
+@@ -53,6 +53,7 @@ constexpr char kMemoryRoot[] = "/tmp/aera/plugins";
+ constexpr uint64_t kMaxCatalog = 1024 * 1024;
+ constexpr uint64_t kMaxManifest = 64 * 1024;
+ constexpr uint64_t kMaxSignature = 4096;
++constexpr uint64_t kMaxReleaseMetadata = 1024 * 1024;
+ // A real catalog is a few hundred kilobytes. A tiny body is what a captive
+ // portal, a filtering proxy or a half closed connection leaves behind, and
+ // wget stores it with exit status 0 - which used to be reported as a bad
+@@ -491,13 +492,14 @@ bool ParseCatalog(const std::string &text, std::vector<Plugin> &plugins,
+ // Use upstream's inactivity timer and process-group cleanup for each source.
+ bool DownloadOnce(const std::string &url, const std::string &path, uint64_t limit,
+                   Progress *progress, unsigned progress_start,
+-                  unsigned progress_end, uint64_t expected_size) {
++                  unsigned progress_end, uint64_t expected_size,
++                  const char *accept = nullptr) {
+   if (limit == 0 || limit > kMaxPayload) return false;
+   transport::DownloadPolicy policy;
+   policy.attempts = 1;
+   policy.idle_timeout = std::chrono::milliseconds(limit <= kMaxCatalog ? 30000 : 120000);
+   return transport::Download(url, path, limit, progress, progress_start,
+-                             progress_end, expected_size, policy);
++                             progress_end, expected_size, policy, accept);
+ }
+ 
+ bool HashFile(const std::string &path, uint64_t expected_size,
+@@ -774,6 +776,86 @@ bool DownloadApiContents(const std::string &url, const std::string &path,
    return WriteFile(path, decoded);
  }
  
@@ -159,7 +180,7 @@ index fb52c1f..f2bf618 100644
  // Derive the contents-API address of a raw file in the AERA-Plugins org, so the
  // same bytes can be fetched from api.github.com when raw.githubusercontent.com
  // is filtered. Owner, ref and path are preserved exactly.
-@@ -929,32 +1028,47 @@ bool ApiContentsUrl(const std::string &raw_url, std::string &api_url) {
+@@ -796,32 +878,47 @@ bool ApiContentsUrl(const std::string &raw_url, std::string &api_url) {
  }
  
  // Try every source for one file: the contents API first (the only host the root
@@ -219,3 +240,41 @@ index fb52c1f..f2bf618 100644
      if (ok) {
        if (HostOf(candidate.url) != HostOf(url)) {
          fprintf(stderr, "AERA plugins: %s delivered by %s\n", url.c_str(),
+diff --git a/aeraui/tests/plugin_download_test.cpp b/aeraui/tests/plugin_download_test.cpp
+index b7d5ba2..0c93ca2 100644
+--- a/aeraui/tests/plugin_download_test.cpp
++++ b/aeraui/tests/plugin_download_test.cpp
+@@ -10,11 +10,17 @@
+ using namespace aeraui::plugins;
+ enum class Scenario { kSuccess, kSlow, kStall, kPartialFailure, kOrphanHelper };
+ static Scenario scenario = Scenario::kSuccess;
++static bool expect_accept_header = false;
+ extern "C" int __wrap_execv(const char *, char *const *arguments) {
+   assert(std::string(arguments[1]) == "wget");
+   const char *path = nullptr;
+-  for (size_t i = 0; arguments[i]; ++i)
++  bool found_accept_header = false;
++  for (size_t i = 0; arguments[i]; ++i) {
+     if (std::string(arguments[i]) == "-O") path = arguments[i + 1];
++    if (std::string(arguments[i]) == "--header=Accept: application/octet-stream")
++      found_accept_header = true;
++  }
++  assert(found_accept_header == expect_accept_header);
+   assert(path);
+   if (scenario == Scenario::kOrphanHelper) {
+     const pid_t helper = fork();
+@@ -46,6 +52,11 @@ int main() {
+   assert(transport::Download(url, path, 1024, &progress, 10, 90, 4, policy));
+   assert(progress.value == 90 && progress.downloaded_bytes == 4);
+ 
++  expect_accept_header = true;
++  assert(transport::Download(url, path, 1024, &progress, 10, 90, 4, policy,
++                             "application/octet-stream"));
++  expect_accept_header = false;
++
+   scenario = Scenario::kSlow;
+   const auto slow_start = std::chrono::steady_clock::now();
+   assert(transport::Download(url, path, 1024, &progress, 0, 100, 35, policy));
+-- 
+2.55.0.windows.3
+

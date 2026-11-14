@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Transplant the official (OEM-signed) recovery vbmeta into a locally built
-recovery.img, so the flashed recovery partition keeps the vendor's AVB
-signature chain instead of the AOSP test key.
+"""Copy stock recovery vbmeta into a locally built image for experiments.
+
+This does NOT give the new payload an OEM signature or valid AVB verification:
+the copied hash descriptors still describe the stock image. Do not relock a
+bootloader based on this output. Prefer the normal build image.
 
 Layout produced (identical to how the vendor ships the partition):
 

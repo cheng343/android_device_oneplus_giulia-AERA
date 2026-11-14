@@ -1,7 +1,7 @@
-From f11a28d759441a85d88f8bd436f80c851d830f1c Mon Sep 17 00:00:00 2001
+From a515179fc18516ddab7960abf38226b5c992f090 Mon Sep 17 00:00:00 2001
 From: cheng343 <203324649+cheng343@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 12:46:52 +0800
-Subject: [PATCH 2/8] aeraui: credit the maintainer on the boot canvas
+Subject: [PATCH] aeraui: credit the maintainer on the boot canvas
 
 The first screen carried no text at all: the boot scene is nine prefiltered A8
 image layers plus a precomposed brand mark. Add the maintainer credit under the
@@ -118,3 +118,6 @@ index 3ca68e3..1d02679 100644
  
    lv_obj_set_style_image_opa(boot->objects[kArrow], LV_OPA_COVER, 0);
    AnimateValue(boot, SetArrowProgress, 0, 255, 3250, 1100,
+-- 
+2.55.0.windows.3
+

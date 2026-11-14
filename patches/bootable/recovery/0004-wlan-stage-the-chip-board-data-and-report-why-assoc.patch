@@ -1,8 +1,8 @@
-From 0c487a7697029db066aa6fb935697801d929dc6e Mon Sep 17 00:00:00 2001
+From a19823c3c44a04bedc38e5562d69fb702dff2f2d Mon Sep 17 00:00:00 2001
 From: cheng343 <203324649+cheng343@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 18:56:50 +0800
-Subject: [PATCH 4/8] wlan: stage the chip board data and report why an
- association fails
+Subject: [PATCH] wlan: stage the chip board data and report why an association
+ fails
 
 Recovery boots with the kernel firmware loader pointed at the ramdisk
 (firmware_class.path=/vendor/firmware) because the modem vfat mount cannot
@@ -32,23 +32,23 @@ image - enough to scan, not enough to associate.
   the SSID's SCAN_RESULTS rows plus the WLAN lines of the kernel ring
   buffer, so the next report carries the driver's own verdict.
 ---
- wlan.cpp | 543 ++++++++++++++++++++++++++++++++++++++++++++++++++++---
- wlan.hpp |  21 +++
- 2 files changed, 541 insertions(+), 23 deletions(-)
+ wlan.cpp | 497 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ wlan.hpp |  17 ++
+ 2 files changed, 513 insertions(+), 1 deletion(-)
 
 diff --git a/wlan.cpp b/wlan.cpp
-index 5a8b125..b63e749 100644
+index a3e0cc3..47f8bbe 100644
 --- a/wlan.cpp
 +++ b/wlan.cpp
-@@ -5,6 +5,7 @@
- #include <cstdint>
+@@ -6,6 +6,7 @@
  #include <cerrno>
+ #include <chrono>
  #include <cstdio>
 +#include <cstdlib>
  #include <cstring>
  #include <dirent.h>
  #include <fstream>
-@@ -71,6 +72,29 @@ static constexpr int WLAN_SUPP_READY_TIMEOUT_MS = 60000;
+@@ -75,6 +76,29 @@ static constexpr int WLAN_SUPP_READY_TIMEOUT_MS = 60000;
   * wrapper (mondrian_wlan_up.sh); it is now native init builtins. */
  static const char* WLAN_SUPP_PREP_PROP = "sys.aera.wlan.up";
  
@@ -78,7 +78,7 @@ index 5a8b125..b63e749 100644
  static int HexDigitValue(char value) {
      if (value >= '0' && value <= '9') return value - '0';
      if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-@@ -206,6 +230,11 @@ static bool OF_GetEncryptedSavedSsids(std::vector<std::string>& ssids)
+@@ -210,6 +234,11 @@ static bool OF_GetEncryptedSavedSsids(std::vector<std::string>& ssids)
  }
  
  bool Wlan::Init() {
@@ -90,7 +90,7 @@ index 5a8b125..b63e749 100644
      // Qualcomm selects the interface MAC while the WLAN module is loading.
      // Prepare its config and firmware file now, before post-decrypt modules
      // create wlan0. Runtime SIOCSIFHWADDR is rejected by newer QCA drivers.
-@@ -229,6 +258,11 @@ bool Wlan::Enable() {
+@@ -233,6 +262,11 @@ bool Wlan::Enable() {
      std::lock_guard<std::recursive_mutex> op(g_wlan_op_mutex);
      EnsureTmpLayout();
  
@@ -102,7 +102,7 @@ index 5a8b125..b63e749 100644
      if (!StartSupplicant()) {
          DataManager::SetValue("tw_wlan_enabled", 0);
          DataManager::SetValue("tw_wlan_connected", 0);
-@@ -330,6 +364,165 @@ bool Wlan::Scan() {
+@@ -334,6 +368,138 @@ bool Wlan::Scan() {
      return false;
  }
  
@@ -180,33 +180,6 @@ index 5a8b125..b63e749 100644
 +        gui_print("WLAN: SSID '%s' is absent from SCAN_RESULTS\n", ssid.c_str());
 +}
 +
-+bool Wlan::WaitForAssociation(const std::string& ssid, int tries, const char* tag) {
-+    for (int attempt = 0; attempt < tries; ++attempt) {
-+        std::string event;
-+        const bool got_event = SuppWaitEvent({"CTRL-EVENT-CONNECTED", "CTRL-EVENT-DISCONNECTED",
-+                                             "CTRL-EVENT-ASSOC-REJECT", "CTRL-EVENT-AUTH-REJECT"},
-+                                            1500, event);
-+
-+        std::string status;
-+        if (SuppCmd("STATUS", status)) {
-+            std::string wpa_state;
-+            std::string current_ssid;
-+            std::string ip_addr;
-+            ParseSupplicantStatus(status, wpa_state, current_ssid, ip_addr);
-+
-+            gui_print("Connection state (%s): %s (%d/%d)\n", tag, wpa_state.c_str(), attempt + 1,
-+                      tries);
-+
-+            if (wpa_state == "COMPLETED" && current_ssid == ssid)
-+                return true;
-+        }
-+
-+        if (!got_event)
-+            usleep(500 * 1000);
-+    }
-+    return false;
-+}
-+
 +void Wlan::DumpDriverLog(const char* why) {
 +    gui_print("WLAN: driver log (%s)\n", why);
 +
@@ -265,10 +238,10 @@ index 5a8b125..b63e749 100644
 +        gui_print("WLAN: kernel ring buffer holds no WLAN driver lines\n");
 +}
 +
- bool Wlan::Connect() {
+ bool Wlan::Connect(const std::string& security, bool hidden) {
      std::lock_guard<std::recursive_mutex> op(g_wlan_op_mutex);
      DataManager::SetValue("wlan_connect_text", "Connecting");
-@@ -387,6 +580,24 @@ bool Wlan::Connect() {
+@@ -397,6 +563,24 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
      gui_print("Encryption: %s (key_mgmt: %s)\n", enc.c_str(), key_mgmt.c_str());
      gui_print(" \n");
  
@@ -293,7 +266,7 @@ index 5a8b125..b63e749 100644
      gui_print("Remove old network config...\n");
      std::string list_out;
      if (SuppCmd("LIST_NETWORKS", list_out)) {
-@@ -518,6 +729,25 @@ bool Wlan::Connect() {
+@@ -537,6 +721,25 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
          }
      }
  
@@ -319,30 +292,13 @@ index 5a8b125..b63e749 100644
      gui_print("Enable new config for network...\n");
      if (!SuppCmd("ENABLE_NETWORK " + network_id)) {
          gui_print("WLAN: enable_network failed\n");
-@@ -551,33 +781,23 @@ bool Wlan::Connect() {
+@@ -568,7 +771,22 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
+     gui_print("Connect to network with new config...\n");
+     gui_print(" \n");
  
-     // Wait for association via supplicant events instead of polling STATUS on a
-     // fixed 1s cadence: each iteration blocks up to 1.5s for a relevant event,
--    // then confirms the SSID via STATUS. Bounded to ~15s worst case but returns
-+    // then confirms the SSID via STATUS. Bounded to ~30s worst case but returns
-     // the instant CTRL-EVENT-CONNECTED lands.
--    bool completed = false;
--
--    for (int tries = 0; tries < 12 && !completed; ++tries) {
--        std::string ev;
--        bool got_event = SuppWaitEvent({"CTRL-EVENT-CONNECTED", "CTRL-EVENT-DISCONNECTED",
--                                        "CTRL-EVENT-ASSOC-REJECT", "CTRL-EVENT-AUTH-REJECT"},
--                                       1500, ev);
--
--        std::string status;
--        if (SuppCmd("STATUS", status)) {
--            std::string wpa_state;
--            std::string current_ssid;
--            std::string ip_addr;
--            ParseSupplicantStatus(status, wpa_state, current_ssid, ip_addr);
-+    bool completed = WaitForAssociation(ssid, 20, "connect");
- 
--            gui_print("Connection state: %s (%d/12)\n", wpa_state.c_str(), tries);
+-    const bool completed = WaitForAssociation(ssid, 20000);
++    bool completed = WaitForAssociation(ssid, 30000);
++
 +    if (!completed && !target_bssid.empty()) {
 +        /*
 +         * The pinned BSS may be the wrong member of a mesh, or its radio may be
@@ -351,22 +307,16 @@ index 5a8b125..b63e749 100644
 +         */
 +        gui_print("WLAN: retrying without a pinned BSS\n");
 +        SuppCmd("SET_NETWORK " + network_id + " bssid 00:00:00:00:00:00");
- 
--            if (wpa_state == "COMPLETED" && current_ssid == ssid) {
--                completed = true;
--                break;
--            }
++
 +        if (SuppCmd("SELECT_NETWORK " + network_id)) {
 +            SuppCmd("RECONNECT");
-+            completed = WaitForAssociation(ssid, 8, "retry");
-         }
--
--        if (!got_event)
--            usleep(500 * 1000);
-     }
++            completed = WaitForAssociation(ssid, 12000);
++        }
++    }
  
      if (!completed) {
-@@ -596,6 +816,27 @@ bool Wlan::Connect() {
+         gui_print(" \n");
+@@ -586,6 +804,27 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
          if (SuppCmd("LIST_NETWORKS", failure_networks))
              gui_print("WLAN: LIST_NETWORKS after failure:\n%s\n",
                        failure_networks.c_str());
@@ -394,7 +344,7 @@ index 5a8b125..b63e749 100644
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
          DataManager::SetValue("tw_wlan_connected", 0);
-@@ -1285,6 +1526,262 @@ bool Wlan::StartSupplicant() {
+@@ -1283,6 +1522,262 @@ bool Wlan::StartSupplicant() {
      return StartInitSupplicantService();
  }
  
@@ -658,10 +608,10 @@ index 5a8b125..b63e749 100644
      char serial_prop[PROPERTY_VALUE_MAX] = {0};
      property_get("ro.serialno", serial_prop, "");
 diff --git a/wlan.hpp b/wlan.hpp
-index 4ea8c5b..8fa7bcd 100644
+index 83976f4..40ce08d 100644
 --- a/wlan.hpp
 +++ b/wlan.hpp
-@@ -41,6 +41,27 @@ private:
+@@ -42,6 +42,23 @@ private:
      static bool StartSupplicant();
      static bool StopSupplicant();
      static bool PrepareStableMacFirmware();
@@ -678,10 +628,6 @@ index 4ea8c5b..8fa7bcd 100644
 +    // empty string when the SSID is not visible to the driver at all.
 +    static std::string FindBssidForSsid(const std::string& ssid);
 +
-+    // Blocks until the supplicant reports COMPLETED for `ssid`, polling STATUS
-+    // between CTRL-EVENT-* waits. `tag` only labels the progress lines.
-+    static bool WaitForAssociation(const std::string& ssid, int tries, const char* tag);
-+
 +    // Failure evidence: the scan rows for `ssid`, the per-network settings the
 +    // supplicant actually stored, and the tail of the WLAN kernel messages.
 +    static void DumpScanResultsForSsid(const std::string& ssid);
@@ -689,3 +635,6 @@ index 4ea8c5b..8fa7bcd 100644
      static bool WaitForProperty(const std::string& key, const std::string& expected, int timeout_ms);
      static bool WaitForSupplicantReady(int timeout_ms);
      static bool StartInitSupplicantService();
+-- 
+2.55.0.windows.3
+

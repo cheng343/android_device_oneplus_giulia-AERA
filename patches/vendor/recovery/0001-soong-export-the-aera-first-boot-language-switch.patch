@@ -1,4 +1,4 @@
-From 6d8b65e9dcb0bdd2d61911659153ac518aed0be5 Mon Sep 17 00:00:00 2001
+From a1b2dfccb185cfe5d91c74eebcfb1c1e40e86f10 Mon Sep 17 00:00:00 2001
 From: AERA <aera@local>
 Date: Fri, 16 Oct 2026 14:55:33 +0800
 Subject: [PATCH] soong: export the AERA_FIRST_BOOT_LANGUAGE switch to Soong
@@ -8,10 +8,10 @@ Subject: [PATCH] soong: export the AERA_FIRST_BOOT_LANGUAGE switch to Soong
  1 file changed, 1 insertion(+)
 
 diff --git a/aera_soong_config.mk b/aera_soong_config.mk
-index 05b5549..def9829 100644
+index d9d2fe3..764ea4e 100644
 --- a/aera_soong_config.mk
 +++ b/aera_soong_config.mk
-@@ -23,6 +23,7 @@ $(call add_soong_config_var,twrpVarsPlugin,\
+@@ -26,6 +26,7 @@ $(call add_soong_config_var,twrpVarsPlugin,\
      AERA_STATUS_INDENT_RIGHT \
      AERA_DEFAULT_LANGUAGE \
      AERA_EXTRA_LANGUAGES \

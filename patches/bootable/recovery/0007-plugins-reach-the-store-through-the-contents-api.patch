@@ -1,7 +1,7 @@
-From 89fb4cd66cd4dcf69790a7c88a5145e9eaa46421 Mon Sep 17 00:00:00 2001
+From 164c0818e4f9963d65f3afba5c74ca103dd5261a Mon Sep 17 00:00:00 2001
 From: cheng343 <203324649+cheng343@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 11:24:43 +0800
-Subject: [PATCH 7/8] plugins: fetch the store through the GitHub contents API
+Subject: [PATCH] plugins: fetch the store through the GitHub contents API
  first
 
 Recovery cannot reach raw.githubusercontent.com on filtered networks, and in
@@ -17,11 +17,11 @@ still from a single source each. All verification stays after the transfer -
 Ed25519 signature over the catalog, SHA-256 over every plugin file and the size
 limits - so no source can inject data.
 ---
- aeraui/features/plugins/plugin_manager.cpp | 206 ++++++++++++++++-----
- 1 file changed, 163 insertions(+), 43 deletions(-)
+ aeraui/features/plugins/plugin_manager.cpp | 210 ++++++++++++++++-----
+ 1 file changed, 167 insertions(+), 43 deletions(-)
 
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index 913aa6f..fb52c1f 100644
+index f8365ab..b90a820 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
 @@ -38,6 +38,14 @@ constexpr char kCatalogUrl[] =
@@ -39,8 +39,8 @@ index 913aa6f..fb52c1f 100644
  constexpr char kCacheRoot[] = "/tmp/aera-plugin-store";
  constexpr char kStorageRoot[] = "/sdcard/AERA/plugins";
  constexpr char kPersistentCacheRoot[] = "/sdcard/AERA/plugins/.store";
-@@ -625,37 +633,6 @@ bool DownloadOnce(const std::string &url, const std::string &path, uint64_t limi
-   return false;
+@@ -492,37 +500,6 @@ bool DownloadOnce(const std::string &url, const std::string &path, uint64_t limi
+                              progress_end, expected_size, policy);
  }
  
 -// Try a public mirror of the very same repository first, then the official URL:
@@ -77,7 +77,7 @@ index 913aa6f..fb52c1f 100644
  bool HashFile(const std::string &path, uint64_t expected_size,
                const std::string &expected_hash, Progress *progress,
                unsigned progress_start = 78, unsigned progress_end = 96) {
-@@ -869,6 +846,131 @@ bool WriteFile(const std::string &path, const std::string &content) {
+@@ -736,6 +713,131 @@ bool WriteFile(const std::string &path, const std::string &content) {
    return ok;
  }
  
@@ -209,7 +209,7 @@ index 913aa6f..fb52c1f 100644
  bool ExtractPayload(LocalBundle &bundle, const std::string &path) {
    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW |
                                O_CLOEXEC, 0600);
-@@ -970,23 +1072,41 @@ bool Refresh(Progress &progress) {
+@@ -837,23 +939,45 @@ bool Refresh(Progress &progress) {
    // may still be serving a cached revision of the catalog while another has the
    // fresh signature, and a mixed pair fails verification for no real reason.
    // Each source is verified with the release key before it is accepted, so this
@@ -244,6 +244,10 @@ index 913aa6f..fb52c1f 100644
    for (size_t index = 0; index < sources.size() && !verified; ++index) {
 -    const std::string source = sources[index];
 -    const std::string signature_url = source + kCatalogSuffix;
++    if (progress.cancel.load()) {
++      unlink(manifest.c_str()); unlink(signature.c_str());
++      return false;
++    }
 +    const CatalogSource &source = sources[index];
      content.clear(); signature_text.clear();
      unlink(manifest.c_str()); unlink(signature.c_str());
@@ -251,18 +255,18 @@ index 913aa6f..fb52c1f 100644
 -        DownloadOnce(source, manifest, kMaxCatalog, nullptr, 0, 0, 0) &&
 -        DownloadOnce(signature_url, signature, kMaxSignature, nullptr, 0, 0, 0);
 +    const bool fetched = source.contents_api
-+        ? (DownloadApiContents(source.catalog, manifest, kMaxCatalog, nullptr, 0,
++        ? (DownloadApiContents(source.catalog, manifest, kMaxCatalog, &progress, 0,
 +                               0) &&
 +           DownloadApiContents(source.signature, signature, kMaxSignature,
-+                               nullptr, 0, 0))
-+        : (DownloadOnce(source.catalog, manifest, kMaxCatalog, nullptr, 0, 0,
++                               &progress, 0, 0))
++        : (DownloadOnce(source.catalog, manifest, kMaxCatalog, &progress, 0, 0,
 +                        0) &&
-+           DownloadOnce(source.signature, signature, kMaxSignature, nullptr, 0,
++           DownloadOnce(source.signature, signature, kMaxSignature, &progress, 0,
 +                        0, 0));
      any_fetched = any_fetched || fetched;
      progress.value.store(45);
      const bool read_ok =
-@@ -1004,7 +1124,7 @@ bool Refresh(Progress &progress) {
+@@ -871,7 +995,7 @@ bool Refresh(Progress &progress) {
        fprintf(stderr,
                "AERA plugins: source %zu (%s) failed: download=%d catalog=%zu B "
                "signature=%zu chars read=%d size=%d decode=%d prefix=\"%s\"\n",
@@ -271,3 +275,6 @@ index 913aa6f..fb52c1f 100644
                TrimmedLength(signature_text), read_ok ? 1 : 0, size_ok ? 1 : 0,
                decode_ok ? 1 : 0, PrintablePrefix(content, 24).c_str());
      }
+-- 
+2.55.0.windows.3
+

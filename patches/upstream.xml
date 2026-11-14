@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <extend-project name="android_bootable_recovery" path="bootable/recovery" revision="e438f6de62090a79e81daf00b449b48da7377753" />
+  <extend-project name="android_vendor_recovery" path="vendor/recovery" revision="1f4b6e19882c83f95d1420872d0c31be0b97a7a6" />
+</manifest>

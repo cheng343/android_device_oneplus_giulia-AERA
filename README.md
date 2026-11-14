@@ -28,26 +28,30 @@ Device tree for building AERA Recovery (LVGL interface) for OnePlus Ace 5 (PKG11
 
 ## How to Build
 
-### 1. Sync AERA Recovery Source
+Use **AERA Recovery 16 Builder** (`.github/workflows/build.yml`) in Actions.
+It retains the proven Ubuntu 24.04 recipe: build on the root filesystem,
+add a 10 GiB swapfile, verify available swap/disk space, reclaim the `.repo`
+cache after sync, and monitor memory and disk throughout compilation.
+Do not substitute the older `build_aera.yml` or Colab notebook for this flow.
 
-```bash
-mkdir -p ~/android/AERA_16.0
-cd ~/android/AERA_16.0
-repo init -u https://github.com/AERA-Recovery/android_manifest -b aera-16.0
-repo sync -c -j$(nproc --all)
-```
+1. Open **Actions → AERA Recovery 16 Builder → Run workflow**.
+2. Use branch `aera-16.0` for both the workflow and device tree, with the
+   default target `giulia-bp2a-eng` and partition `recovery`.
+3. Download `AERA-Recovery-giulia` from the successful run. Releases are drafts.
 
-### 2. Place Device Tree
+The workflow applies `patches/upstream.xml` before source sync, then applies
+the patch series and runs focused Wi-Fi/download tests before building.
+The artifact includes `source-manifest.xml` with the resolved source revisions.
+See [patches/README.md](patches/README.md) for the upstream baseline and patch notes.
 
-```bash
-git clone <this_repo_url> device/oneplus/giulia
-```
+For a manual Linux build, reproduce the same workflow's resource preparation,
+local manifest and patch steps before `lunch twrp_giulia-bp2a-eng` and
+`mka adbd recoveryimage`. A plain `mka` command alone omits these requirements.
 
-### 3. Build Recovery Image
+## AVB and image variants
 
-```bash
-cd ~/android/AERA_16.0
-source build/envsetup.sh
-lunch twrp_giulia-eng
-mka recoveryimage
-```
+`recovery.img` is the normal build output. The historical `-avb-oem.img` variant
+only copies stock vbmeta; it does **not** give the modified payload a valid OEM
+signature. Keep the bootloader unlocked for custom recovery. Disabling AVB by
+flashing a modified `vbmeta` is not an established requirement for this tree;
+the current device/firmware still needs on-device validation.
