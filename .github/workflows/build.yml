@@ -171,9 +171,16 @@ jobs:
         git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
         git config --global url."https://github.com/".insteadOf "git@github.com:"
 
+    - name: Setup device
+      run: |
+        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} device/${{ github.event.inputs.DEVICE_PATH }}
+
     - name: Sync source
       run: |
         repo init -u ${{ github.event.inputs.TWRP_MANIFEST_URL }} -b ${{ github.event.inputs.TWRP_MANIFEST_BRANCH }} --depth=1
+        # Match the project revisions against which the device patches were verified.
+        mkdir -p .repo/local_manifests
+        cp "device/${{ github.event.inputs.DEVICE_PATH }}/patches/upstream.xml" .repo/local_manifests/giulia-patches.xml
         find .repo/manifests -name "*.xml" -exec sed -i 's|ssh://git@github.com/|https://github.com/|g' {} +
         find .repo/manifests -name "*.xml" -exec sed -i 's|git@github.com:|https://github.com/|g' {} +
         grep -n "remote name=\"AERA\"" .repo/manifests/twrp-default.xml || true
@@ -181,13 +188,10 @@ jobs:
         TIP_PID=$!
         repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags --optimized-fetch --prune || repo sync -c -j4
         kill $TIP_PID 2>/dev/null || true
+        repo manifest -r -o source-manifest.xml
         echo "Removing .repo cache to free up ~20GB of disk space..."
         rm -rf .repo
         df -h
-
-    - name: Setup device
-      run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} device/${{ github.event.inputs.DEVICE_PATH }}
 
     - name: Apply device patches
       run: |
@@ -222,6 +226,21 @@ jobs:
           exit 1
         fi
         echo "Applied $applied patch(es)."
+
+    - name: Validate patched Wi-Fi and plugin download behavior
+      run: |
+        set -euo pipefail
+        TEST_ROOT="$PWD/bootable/recovery/aeraui"
+        mkdir -p "$RUNNER_TEMP/aera-tests"
+        for test in wifi_network wifi_ip_config wifi_dhcp; do
+          g++ -std=c++17 -pthread -Wall -Wextra -Werror -UNDEBUG \
+            "$TEST_ROOT/tests/${test}_test.cpp" -o "$RUNNER_TEMP/aera-tests/$test"
+          "$RUNNER_TEMP/aera-tests/$test"
+        done
+        g++ -std=c++17 -pthread -Wall -Wextra -Werror -UNDEBUG \
+          -I "$TEST_ROOT/features" "$TEST_ROOT/tests/plugin_download_test.cpp" \
+          -Wl,--wrap=execv -o "$RUNNER_TEMP/aera-tests/plugin_download"
+        "$RUNNER_TEMP/aera-tests/plugin_download"
 
     - name: Generate build info
       run: |
@@ -428,13 +447,10 @@ jobs:
         ls -l out/artifacts/
 
     - name: Produce AVB-transplanted variant
-      # The AOSP build signs recovery.img with the test key. The stock OnePlus
-      # image carries a 2240-byte OEM-signed vbmeta (SHA256_RSA4096) in the same
-      # "payload + vbmeta + zeros + AVBf footer" layout, so we can swap the
-      # vbmeta and give the bootloader the vendor signature chain back. Both
-      # variants ship: try -avb-oem.img first, fall back to the raw one (the
-      # Ace 5 already accepted an unsigned TWRP image, so this may not even
-      # matter), and D:\ace5\extracted\recovery.img is always the way home.
+      # Keep the historical experimental variant for comparison. Copying the
+      # stock vbmeta does NOT sign the rebuilt payload: its hash descriptors
+      # still describe the stock recovery. This is not proof of AVB validity
+      # or permission to relock the bootloader. Prefer the normal build image.
       continue-on-error: true
       run: |
         set -x
@@ -487,7 +503,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: AERA-Recovery-${{ github.event.inputs.DEVICE_NAME }}
-        path: out/artifacts/*
+        path: |
+          out/artifacts/*
+          source-manifest.xml
 
     - name: Upload to Release
       # The build lands as an unpublished draft release: nothing shows up on the

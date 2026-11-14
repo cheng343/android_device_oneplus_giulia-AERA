@@ -1,8 +1,7 @@
-From f19c18ac0236904e6ce396804922b820a1681e6b Mon Sep 17 00:00:00 2001
+From f22db5d9c5dca03d1007a959105571346aeeb4f3 Mon Sep 17 00:00:00 2001
 From: cheng343 <203324649+cheng343@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 12:45:03 +0800
-Subject: [PATCH 1/8] wlan: configure the network wpa_supplicant actually
- created
+Subject: [PATCH] wlan: configure the network wpa_supplicant actually created
 
 Connect() dropped the id returned by ADD_NETWORK and then addressed network 0
 for SET_NETWORK/ENABLE_NETWORK/SELECT_NETWORK. wpa_supplicant never reuses an
@@ -22,14 +21,14 @@ never entering AUTHENTICATING: it was never asked to associate at all.
 * dump STATUS and LIST_NETWORKS when the association wait fails
 * dump /tmp/dhcptool.log when dhcptool fails (it used to return silently)
 ---
- wlan.cpp | 176 ++++++++++++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 148 insertions(+), 28 deletions(-)
+ wlan.cpp | 202 +++++++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 166 insertions(+), 36 deletions(-)
 
 diff --git a/wlan.cpp b/wlan.cpp
-index ef51095..5a8b125 100644
+index 933a946..a3e0cc3 100644
 --- a/wlan.cpp
 +++ b/wlan.cpp
-@@ -142,6 +142,32 @@ static std::string HexEncode(const std::string& value) {
+@@ -146,6 +146,32 @@ static std::string HexEncode(const std::string& value) {
      return encoded;
  }
  
@@ -62,7 +61,7 @@ index ef51095..5a8b125 100644
  static void SetWlanTestResult(const std::string& title,
                                const std::string& line1,
                                const std::string& line2,
-@@ -364,7 +390,6 @@ bool Wlan::Connect() {
+@@ -374,7 +400,6 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
      gui_print("Remove old network config...\n");
      std::string list_out;
      if (SuppCmd("LIST_NETWORKS", list_out)) {
@@ -70,7 +69,7 @@ index ef51095..5a8b125 100644
          std::istringstream lss(list_out);
          std::string lline;
          bool first_line = true;
-@@ -379,19 +404,38 @@ bool Wlan::Connect() {
+@@ -389,19 +414,38 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
              if (lline.empty())
                  continue;
  
@@ -116,7 +115,7 @@ index ef51095..5a8b125 100644
          gui_print("WLAN: add_network failed\n");
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
-@@ -399,8 +443,27 @@ bool Wlan::Connect() {
+@@ -409,8 +453,27 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
          return false;
      }
  
@@ -145,10 +144,11 @@ index ef51095..5a8b125 100644
          gui_print("WLAN: failed setting SSID\n");
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
-@@ -408,8 +471,26 @@ bool Wlan::Connect() {
+@@ -418,15 +481,34 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
          return false;
      }
  
+-    if (!SuppCmd(std::string("SET_NETWORK 0 scan_ssid ") + (hidden ? "1" : "0"))) {
 +    /*
 +     * Prove the SSID landed before waiting eighteen seconds for an association
 +     * that cannot happen. A rejected SET_NETWORK used to look like a success
@@ -167,25 +167,33 @@ index ef51095..5a8b125 100644
 +    gui_print("WLAN: network %s ssid verified: %s\n", network_id.c_str(),
 +              Trim(ssid_check).c_str());
 +
++    if (!SuppCmd("SET_NETWORK " + network_id + " scan_ssid " + (hidden ? "1" : "0"))) {
+         gui_print("WLAN: failed setting hidden-network scan policy\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+         DataManager::SetValue("tw_wlan_connected", 0);
+         return false;
+     }
++
      gui_print("Add encryption to new config...\n");
 -    if (!SuppCmd("SET_NETWORK 0 key_mgmt " + key_mgmt)) {
 +    if (!SuppCmd("SET_NETWORK " + network_id + " key_mgmt " + key_mgmt)) {
          gui_print("WLAN: failed setting key_mgmt\n");
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
-@@ -423,9 +504,9 @@ bool Wlan::Connect() {
+@@ -440,9 +522,9 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
  
          bool pass_ok = false;
          if (key_mgmt == "SAE") {
 -            pass_ok = SuppCmd("SET_NETWORK 0 sae_password \"" + esc_pass + "\"");
 +            pass_ok = SuppCmd("SET_NETWORK " + network_id + " sae_password \"" + esc_pass + "\"");
          } else {
--            pass_ok = SuppCmd("SET_NETWORK 0 psk \"" + esc_pass + "\"");
-+            pass_ok = SuppCmd("SET_NETWORK " + network_id + " psk \"" + esc_pass + "\"");
+-            pass_ok = SuppCmd("SET_NETWORK 0 psk " + (aera::wifi::IsRawPsk(pass)
++            pass_ok = SuppCmd("SET_NETWORK " + network_id + " psk " + (aera::wifi::IsRawPsk(pass)
+                 ? pass : "\"" + esc_pass + "\""));
          }
  
-         if (!pass_ok) {
-@@ -438,7 +519,7 @@ bool Wlan::Connect() {
+@@ -456,7 +538,7 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
      }
  
      gui_print("Enable new config for network...\n");
@@ -194,7 +202,7 @@ index ef51095..5a8b125 100644
          gui_print("WLAN: enable_network failed\n");
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
-@@ -447,7 +528,7 @@ bool Wlan::Connect() {
+@@ -465,7 +547,7 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
      }
  
      gui_print("Select new config for network...\n");
@@ -203,7 +211,7 @@ index ef51095..5a8b125 100644
          gui_print("WLAN: select_network failed\n");
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
-@@ -502,6 +583,19 @@ bool Wlan::Connect() {
+@@ -491,6 +573,19 @@ bool Wlan::Connect(const std::string& security, bool hidden) {
      if (!completed) {
          gui_print(" \n");
          gui_print("WLAN: association failed\n");
@@ -223,25 +231,105 @@ index ef51095..5a8b125 100644
          DataManager::SetValue("wlan_connect_text", "Failed");
          DataManager::SetValue("wlan_connect_done", 0);
          DataManager::SetValue("tw_wlan_connected", 0);
-@@ -1362,8 +1456,16 @@ bool Wlan::StartDhcp() {
+@@ -720,7 +815,8 @@ bool Wlan::ConnectSaved() {
+     }
+ 
+     gui_print("Add saved network config...\n");
+-    if (!SuppCmd("ADD_NETWORK")) {
++    std::string add_reply;
++    if (!SuppCmd("ADD_NETWORK", add_reply)) {
+         gui_print("WLAN: add_network failed\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+@@ -728,8 +824,18 @@ bool Wlan::ConnectSaved() {
          return false;
      }
  
--    if (!RunCommand(dhcptool + " " + iface + " >/tmp/dhcptool.log 2>&1"))
-+    if (!RunCommand(dhcptool + " " + iface + " >/tmp/dhcptool.log 2>&1")) {
-+        // The exit status alone says nothing about why; dhcptool's own output is
-+        // the only record of why the lease never arrived.
-+        std::string dhcp_log;
-+        if (ReadFile("/tmp/dhcptool.log", dhcp_log) && !Trim(dhcp_log).empty())
-+            gui_print("WLAN: dhcptool failed, output:\n%s\n", dhcp_log.c_str());
-+        else
-+            gui_print("WLAN: dhcptool failed with no output\n");
-         return false;
++    const std::string network_id = Trim(add_reply);
++    if (network_id.empty() ||
++        network_id.find_first_not_of("0123456789") != std::string::npos) {
++        gui_print("WLAN: add_network returned an unusable id '%s'\n", network_id.c_str());
++        DataManager::SetValue("wlan_connect_text", "Failed");
++        DataManager::SetValue("wlan_connect_done", 0);
++        DataManager::SetValue("tw_wlan_connected", 0);
++        return false;
 +    }
++
+     gui_print("Add saved SSID to config...\n");
+-    if (!SuppCmd("SET_NETWORK 0 ssid " + HexEncode(ssid))) {
++    if (!SuppCmd("SET_NETWORK " + network_id + " ssid " + HexEncode(ssid))) {
+         gui_print("WLAN: failed setting saved SSID\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+@@ -737,7 +843,7 @@ bool Wlan::ConnectSaved() {
+         return false;
+     }
  
-     /*
-      * dhcptool publishes DNS servers as Android properties, but recovery has
-@@ -1700,22 +1802,40 @@ void Wlan::RefreshWlanPageIfShown() {
+-    if (!SuppCmd(std::string("SET_NETWORK 0 scan_ssid ") + (hidden ? "1" : "0"))) {
++    if (!SuppCmd(std::string("SET_NETWORK " + network_id + " scan_ssid ") + (hidden ? "1" : "0"))) {
+         gui_print("WLAN: failed restoring hidden-network scan policy\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+@@ -745,7 +851,7 @@ bool Wlan::ConnectSaved() {
+         return false;
+     }
+     gui_print("Add saved encryption to config...\n");
+-    if (!SuppCmd("SET_NETWORK 0 key_mgmt " + key_mgmt)) {
++    if (!SuppCmd("SET_NETWORK " + network_id + " key_mgmt " + key_mgmt)) {
+         gui_print("WLAN: failed setting saved key_mgmt\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+@@ -760,9 +866,9 @@ bool Wlan::ConnectSaved() {
+ 
+         bool pass_ok = false;
+         if (key_mgmt == "SAE") {
+-            pass_ok = SuppCmd("SET_NETWORK 0 sae_password \"" + esc_pass + "\"");
++            pass_ok = SuppCmd("SET_NETWORK " + network_id + " sae_password \"" + esc_pass + "\"");
+         } else {
+-            pass_ok = SuppCmd("SET_NETWORK 0 psk " + (aera::wifi::IsRawPsk(saved_pass)
++            pass_ok = SuppCmd("SET_NETWORK " + network_id + " psk " + (aera::wifi::IsRawPsk(saved_pass)
+                 ? saved_pass : "\"" + esc_pass + "\""));
+         }
+ 
+@@ -776,7 +882,7 @@ bool Wlan::ConnectSaved() {
+     }
+ 
+     gui_print("Enable saved config...\n");
+-    if (!SuppCmd("ENABLE_NETWORK 0")) {
++    if (!SuppCmd("ENABLE_NETWORK " + network_id)) {
+         gui_print("WLAN: enable saved network failed\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+@@ -785,7 +891,7 @@ bool Wlan::ConnectSaved() {
+     }
+ 
+     gui_print("Select saved config...\n");
+-    if (!SuppCmd("SELECT_NETWORK 0")) {
++    if (!SuppCmd("SELECT_NETWORK " + network_id)) {
+         gui_print("WLAN: select saved network failed\n");
+         DataManager::SetValue("wlan_connect_text", "Failed");
+         DataManager::SetValue("wlan_connect_done", 0);
+@@ -1454,6 +1560,9 @@ bool Wlan::StartDhcp() {
+         aera::wifi::DhcpLease lease;
+         if (result != 0 || !aera::wifi::ReadDhcpLease(lease_file, lease)) {
+             LOGERR("WLAN: DHCP lease acquisition failed (rc=%d); see /tmp/dhcptool.log\n", result);
++            std::string dhcp_log;
++            if (ReadFile("/tmp/dhcptool.log", dhcp_log) && !Trim(dhcp_log).empty())
++                gui_print("WLAN: DHCP output:\n%s\n", dhcp_log.c_str());
+             return false;
+         }
+         if (!RunCommand(ip + " -4 addr add " + lease.address + "/" + std::to_string(lease.prefix) + " dev " + iface) ||
+@@ -1472,6 +1581,9 @@ bool Wlan::StartDhcp() {
+         if (!FileExists(BIN_DHCPTOOL) ||
+             aera::wifi::RunDhcpProcess({BIN_DHCPTOOL, iface}, "/tmp/dhcptool.log", 30000) != 0) {
+             LOGERR("WLAN: legacy DHCP failed or exceeded its 30s deadline\n");
++            std::string dhcp_log;
++            if (ReadFile("/tmp/dhcptool.log", dhcp_log) && !Trim(dhcp_log).empty())
++                gui_print("WLAN: DHCP output:\n%s\n", dhcp_log.c_str());
+             return false;
+         }
+     }
+@@ -1811,22 +1923,40 @@ void Wlan::RefreshWlanPageIfShown() {
  bool Wlan::SuppCmd(const std::string& ctrl_cmd, std::string& out) {
      std::lock_guard<std::mutex> lk(g_supp_mutex);
  
@@ -295,3 +383,6 @@ index ef51095..5a8b125 100644
  }
  
  bool Wlan::SuppCmd(const std::string& ctrl_cmd) {
+-- 
+2.55.0.windows.3
+

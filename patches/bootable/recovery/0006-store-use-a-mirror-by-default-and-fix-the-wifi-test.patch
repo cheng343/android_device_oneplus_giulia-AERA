@@ -1,7 +1,7 @@
-From aeafae2a390172734b489acdba22ad54caf05949 Mon Sep 17 00:00:00 2001
+From 79fff1f899243e8c3c8d920996ad02969834db21 Mon Sep 17 00:00:00 2001
 From: cheng343 <203324649+cheng343@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 08:05:17 +0800
-Subject: [PATCH 6/8] plugins: reach the store through a mirror and say why a
+Subject: [PATCH] plugins: reach the store through a mirror and say why a
  transfer failed
 
 Recovery has no proxy of its own, so on networks that filter GitHub the store
@@ -27,12 +27,12 @@ It now asks the default gateway, then 223.5.5.5, 119.29.29.29, 8.8.8.8 and
 1.1.1.1, and finally performs a small HTTP fetch for networks that drop ICMP.
 The result line names the target that answered.
 ---
- aeraui/features/plugins/plugin_manager.cpp | 192 ++++++++++++++++++---
- wlan.cpp                                   |  60 ++++++-
- 2 files changed, 223 insertions(+), 29 deletions(-)
+ aeraui/features/plugins/plugin_manager.cpp | 170 ++++++++++++++++++---
+ wlan.cpp                                   |  60 +++++++-
+ 2 files changed, 210 insertions(+), 20 deletions(-)
 
 diff --git a/aeraui/features/plugins/plugin_manager.cpp b/aeraui/features/plugins/plugin_manager.cpp
-index 9f4a9b4..913aa6f 100644
+index 79a5709..f8365ab 100644
 --- a/aeraui/features/plugins/plugin_manager.cpp
 +++ b/aeraui/features/plugins/plugin_manager.cpp
 @@ -36,8 +36,8 @@ namespace {
@@ -57,8 +57,8 @@ index 9f4a9b4..913aa6f 100644
 +constexpr uint64_t kMinCatalog = 1024;
  constexpr uint64_t kMaxPayload = 512ULL * 1024 * 1024;
  constexpr uint64_t kMaxPackage = kMaxPayload + 1024 * 1024;
- // Every other downloader in the recovery already puts a deadline on its wget
-@@ -139,6 +144,48 @@ bool OfficialUrl(const std::string &url) {
+ constexpr std::array<uint8_t, 32> kSigningKey{{
+@@ -128,6 +133,48 @@ bool OfficialUrl(const std::string &url) {
           url.compare(0, sizeof(github) - 1, github) == 0;
  }
  
@@ -107,7 +107,7 @@ index 9f4a9b4..913aa6f 100644
  bool EnsureDirectory(const std::string &path) {
    if (path.empty() || path.front() != '/') return false;
    std::string current;
-@@ -180,6 +227,23 @@ bool ReadBounded(const std::string &path, uint64_t maximum, std::string &data) {
+@@ -169,6 +216,23 @@ bool ReadBounded(const std::string &path, uint64_t maximum, std::string &data) {
    return true;
  }
  
@@ -131,68 +131,33 @@ index 9f4a9b4..913aa6f 100644
  bool DecodeSignature(std::string text, std::array<uint8_t, 64> &signature) {
    text.erase(std::remove_if(text.begin(), text.end(), [](unsigned char c) {
      return std::isspace(c);
-@@ -409,11 +473,13 @@ bool ParseCatalog(const std::string &text, std::vector<Plugin> &plugins,
+@@ -416,12 +480,47 @@ bool ParseCatalog(const std::string &text, std::vector<Plugin> &plugins,
    return true;
  }
  
--bool Download(const std::string &url, const std::string &path, uint64_t limit,
--              Progress *progress = nullptr, unsigned progress_start = 0,
--              unsigned progress_end = 0, uint64_t expected_size = 0) {
--  if (!OfficialUrl(url) || limit == 0 || limit > kMaxPayload) return false;
--  for (unsigned attempt = 0; attempt < 3; ++attempt) {
-+// One transfer from exactly one URL. The caller decides which URLs to try and
-+// in what order; this function only enforces the deadline and the byte limits.
++// Use upstream's inactivity timer and process-group cleanup for each source.
 +bool DownloadOnce(const std::string &url, const std::string &path, uint64_t limit,
 +                  Progress *progress, unsigned progress_start,
 +                  unsigned progress_end, uint64_t expected_size) {
 +  if (limit == 0 || limit > kMaxPayload) return false;
-+  {
-     unlink(path.c_str());
- 
-     // Recovery installs a process-wide SIGCHLD handler which may reap wget
-@@ -529,10 +595,9 @@ bool Download(const std::string &url, const std::string &path, uint64_t limit,
-       if (waited != child) status = 0;
-     }
-     const bool cancelled = progress && progress->cancel.load();
--    if (timed_out || cancelled) {
--      fprintf(stderr, "AERA plugins: download of %s %s after %llu ms\n",
--              url.c_str(), cancelled ? "cancelled" : "stalled",
--              static_cast<unsigned long long>(timeout_ms));
-+    if (cancelled || timed_out) {
-+      fprintf(stderr, "AERA plugins: download of %s %s\n", url.c_str(),
-+              cancelled ? "cancelled" : "gave up: no data within the deadline");
-     }
-     const bool exited_ok =
-         reaped && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-@@ -546,13 +611,51 @@ bool Download(const std::string &url, const std::string &path, uint64_t limit,
-       }
-       return true;
-     }
--    // A stalled or cancelled attempt is not worth two more identical waits.
--    if (timed_out || cancelled) break;
-+    if (!cancelled && !timed_out) {
-+      // wget can exit non-zero after writing a partial file (poisoned DNS, a
-+      // reset mid-transfer or an HTTP error body), and recovery has no shell to
-+      // check by hand: state the reason here, where it is still known.
-+      fprintf(stderr,
-+              "AERA plugins: download of %s failed (wget exit %d, %lld bytes)\n",
-+              url.c_str(), reaped && WIFEXITED(status) ? WEXITSTATUS(status) : -1,
-+              static_cast<long long>(info.st_size));
-+    }
-   }
-   unlink(path.c_str());
-   return false;
- }
- 
++  transport::DownloadPolicy policy;
++  policy.attempts = 1;
++  policy.idle_timeout = std::chrono::milliseconds(limit <= kMaxCatalog ? 30000 : 120000);
++  return transport::Download(url, path, limit, progress, progress_start,
++                             progress_end, expected_size, policy);
++}
++
 +// Try a public mirror of the very same repository first, then the official URL:
 +// recovery has no proxy of its own, and in networks where GitHub is filtered the
 +// direct attempt is what fails, which used to leave the store permanently empty.
 +// Whatever bytes arrive still have to pass the caller's signature or SHA-256
 +// check, so a mirror can only ever supply identical content.
-+bool Download(const std::string &url, const std::string &path, uint64_t limit,
-+              Progress *progress = nullptr, unsigned progress_start = 0,
-+              unsigned progress_end = 0, uint64_t expected_size = 0) {
-+  if (!OfficialUrl(url) || limit == 0 || limit > kMaxPayload) return false;
+ bool Download(const std::string &url, const std::string &path, uint64_t limit,
+               Progress *progress = nullptr, unsigned progress_start = 0,
+               unsigned progress_end = 0, uint64_t expected_size = 0) {
+   if (!OfficialUrl(url) || limit == 0 || limit > kMaxPayload) return false;
+-  return transport::Download(url, path, limit, progress, progress_start,
+-                             progress_end, expected_size);
 +  std::vector<std::string> candidates;
 +  AppendMirrors(url, candidates);
 +  candidates.push_back(url);
@@ -213,16 +178,14 @@ index 9f4a9b4..913aa6f 100644
 +  }
 +  fprintf(stderr, "AERA plugins: no source could deliver %s\n", url.c_str());
 +  return false;
-+}
-+
+ }
+ 
  bool HashFile(const std::string &path, uint64_t expected_size,
-               const std::string &expected_hash, Progress *progress,
-               unsigned progress_start = 78, unsigned progress_end = 96) {
-@@ -862,23 +965,60 @@ bool Refresh(Progress &progress) {
+@@ -733,23 +832,60 @@ bool Refresh(Progress &progress) {
    const std::string manifest = std::string(kCacheRoot) + "/catalog.json.new";
    const std::string signature = manifest + ".sig";
    progress.status = "Downloading signed catalog"; progress.value.store(10);
--  if (!Download(kCatalogUrl, manifest, kMaxCatalog)) {
+-  if (!Download(kCatalogUrl, manifest, kMaxCatalog, &progress)) {
 +
 +  // The catalog and its signature have to come from the same host: one mirror
 +  // may still be serving a cached revision of the catalog while another has the
@@ -269,7 +232,7 @@ index 9f4a9b4..913aa6f 100644
 +    }
    }
 -  progress.value.store(45);
--  if (!Download(kCatalogSignatureUrl, signature, kMaxSignature)) {
+-  if (!Download(kCatalogSignatureUrl, signature, kMaxSignature, &progress)) {
 -    unlink(manifest.c_str()); unlink(signature.c_str());
 -    progress.error = "Could not download the AERA plugin catalog."; return false;
 +  if (!verified) {
@@ -293,10 +256,10 @@ index 9f4a9b4..913aa6f 100644
    std::vector<Plugin> parsed; std::string error;
    if (!ParseCatalog(content, parsed, error)) {
 diff --git a/wlan.cpp b/wlan.cpp
-index b63e749..64175a3 100644
+index 47f8bbe..d978e35 100644
 --- a/wlan.cpp
 +++ b/wlan.cpp
-@@ -1388,21 +1388,75 @@ bool Wlan::TestConnection()
+@@ -1384,21 +1384,75 @@ bool Wlan::TestConnection()
      if (busybox.empty())
          busybox = "busybox";
  
@@ -374,7 +337,7 @@ index b63e749..64175a3 100644
              "DNS: OK",
              "");
          return true;
-@@ -1413,7 +1467,7 @@ bool Wlan::TestConnection()
+@@ -1409,7 +1463,7 @@ bool Wlan::TestConnection()
              "Network Connection",
              "Connected: " + ssid,
              "IP address: " + ip_addr,
@@ -383,3 +346,6 @@ index b63e749..64175a3 100644
              "DNS: Failed",
              "Name lookup may be broken.");
          return true;
+-- 
+2.55.0.windows.3
+
